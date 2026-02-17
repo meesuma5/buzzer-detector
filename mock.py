@@ -96,6 +96,7 @@ else:
     total_frames = 0  # N/A for live capture
 
 rois = []  # Will store tuples: (x, y, w, h, name, was_active, baseline, samples, history, active_history)
+last_active_frames = {}
 paused = False
 recording = False
 video_writer = None
@@ -133,6 +134,8 @@ print("--- CONTROLS ---")
 print("'r'     : Draw a new ROI (Drag mouse, press ENTER)")
 print("'b'     : Capture baseline (light OFF) for all ROIs")
 print("'c'     : Clear all ROIs")
+print("'d'     : Delete ROI by name")
+print("'x'     : Reset last-active board")
 print("SPACE   : Pause / Play")
 if not is_live_capture:
     print("'>' (.) : Next Frame (only when paused)")
@@ -163,6 +166,56 @@ def restore_baselines_for_frame(target_frame, rois_list):
         if restored_state is not None:
             baseline, samples = restored_state[0], list(restored_state[1])
         rois_list[i] = (x, y, w, h, name, was_active, baseline, samples, history, active_history)
+
+def draw_last_active_board(frame, rois_list, last_active_map):
+    if not rois_list:
+        return
+
+    names = [roi[4] for roi in rois_list]
+    values = [str(last_active_map.get(name, "-")) for name in names]
+
+    font = cv2.FONT_HERSHEY_SIMPLEX
+    font_scale = 0.8
+    thickness = 2
+    padding_x = 14
+    padding_y = 10
+    cell_heights = []
+    cell_widths = []
+
+    for name, value in zip(names, values):
+        name_size = cv2.getTextSize(name, font, font_scale, thickness)[0]
+        value_size = cv2.getTextSize(value, font, font_scale, thickness)[0]
+        cell_widths.append(max(name_size[0], value_size[0]) + padding_x * 2)
+        cell_heights.append(max(name_size[1], value_size[1]) + padding_y * 2)
+
+    row_height = max(cell_heights) if cell_heights else 0
+    total_width = sum(cell_widths)
+    total_height = row_height * 2
+    start_x, start_y = 10, 10
+
+    # Background board
+    cv2.rectangle(frame, (start_x, start_y), (start_x + total_width, start_y + total_height), (40, 40, 40), -1)
+    cv2.rectangle(frame, (start_x, start_y), (start_x + total_width, start_y + total_height), (200, 200, 200), 1)
+    cv2.line(frame, (start_x, start_y + row_height), (start_x + total_width, start_y + row_height), (200, 200, 200), 1)
+
+    cursor_x = start_x
+    for idx, (name, value) in enumerate(zip(names, values)):
+        cell_width = cell_widths[idx]
+        if idx > 0:
+            cv2.line(frame, (cursor_x, start_y), (cursor_x, start_y + total_height), (200, 200, 200), 1)
+
+        name_size = cv2.getTextSize(name, font, font_scale, thickness)[0]
+        value_size = cv2.getTextSize(value, font, font_scale, thickness)[0]
+
+        name_x = cursor_x + (cell_width - name_size[0]) // 2
+        name_y = start_y + row_height - padding_y
+        value_x = cursor_x + (cell_width - value_size[0]) // 2
+        value_y = start_y + total_height - padding_y
+
+        cv2.putText(frame, name, (name_x, name_y), font, font_scale, (240, 240, 240), thickness)
+        cv2.putText(frame, value, (value_x, value_y), font, font_scale, (0, 255, 255), thickness)
+
+        cursor_x += cell_width
 
 
 while True:
@@ -248,6 +301,8 @@ while True:
             log_msg = f"[{timestamp}] Frame {current_frame}: {name} -> {status} (B:{avg_brightness}, T:{threshold_value})"
             print(f"[THRESHOLD CROSSED] {log_msg}")
             log_entries.append(log_msg)
+            if is_active:
+                last_active_frames[name] = current_frame
         # Persist baseline history for restores
         if baseline is not None:
             history.append((current_frame, baseline, list(samples)))
@@ -295,6 +350,8 @@ while True:
     
     cv2.putText(display_frame, status_text, (10, height - 10), 
                 cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 255, 255), 2)
+
+    draw_last_active_board(display_frame, rois, last_active_frames)
     
     # Write frame if recording
     if recording and video_writer is not None:
@@ -432,6 +489,7 @@ while True:
             history = deque(maxlen=BASELINE_HISTORY_FRAMES)
             active_history = {}
             rois.append((rect[0], rect[1], rect[2], rect[3], roi_name, False, None, [], history, active_history))
+            last_active_frames[roi_name] = "-"
             print(f"Added region: {roi_name}")
     elif key == ord('b'):
         # Capture baseline for all ROIs (use current frame)
@@ -445,8 +503,28 @@ while True:
                 samples = [baseline]
                 rois[i] = (x, y, w, h, name, False, baseline, samples, history, active_history)
             print("Baseline captured for all ROIs")
+    elif key == ord('x'):
+        for roi_data in rois:
+            last_active_frames[roi_data[4]] = "-"
+        print("Last-active board reset")
+    elif key == ord('d'):
+        if not rois:
+            print("No ROIs available to delete")
+        else:
+            roi_name = input("Enter ROI name to delete: ").strip()
+            if not roi_name:
+                print("No ROI name entered")
+            else:
+                original_count = len(rois)
+                rois = [roi_data for roi_data in rois if roi_data[4] != roi_name]
+                if len(rois) == original_count:
+                    print(f"ROI '{roi_name}' not found")
+                else:
+                    last_active_frames.pop(roi_name, None)
+                    print(f"Deleted ROI '{roi_name}'")
     elif key == ord('c'):
         rois = []
+        last_active_frames = {}
         print("All ROIs cleared")
 
 # Cleanup

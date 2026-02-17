@@ -9,12 +9,14 @@ This repository contains a single OpenCV-based script that:
 - Logs threshold crossings for later review.
 - Supports both video playback and live capture modes.
 - Optionally records annotated video and audio (live mode).
+- Displays a last-active board for quick per-ROI status checks.
 
 ## What It Does
 - **ROI-based detection:** Track only the buzzer area instead of the whole frame.
 - **Rolling baseline:** Baselines are computed from recent inactive frames and refreshed on a timer.
 - **Active-frame navigation:** Jump through detected activity frames with shortcuts.
 - **Session artifacts:** Logs and recordings are stored per session.
+- **Last-active board:** A small scoreboard tracks the most recent frame each ROI was lit.
 
 ## Engineering Depth (Why This Is Nontrivial)
 - **Frame accumulation and state:** Each ROI maintains a rolling history of baseline snapshots to keep detection stable over time.
@@ -22,6 +24,7 @@ This repository contains a single OpenCV-based script that:
 - **Timeline recovery:** When jumping across the timeline, baseline state is restored for the target frame to preserve consistency.
 - **Realtime + playback parity:** The same detection pipeline supports both live capture and offline analysis.
 - **Integrated session output:** Video, audio, and logs are synchronized and stored per session for auditability.
+- **Board coherence:** The last-active board updates only on threshold crossings and can be reset without affecting detection.
 
 ## System Snapshot
 
@@ -59,9 +62,15 @@ You will be prompted to choose between video playback and live capture.
 3. Draw ROIs and tune the `Delta` slider.
 4. Use `R` to start/stop recording. Output files and logs go to a session folder.
 
+### Last-Active Board
+The on-screen board shows each ROI name in the first row and the most recent frame where it became active in the second row. Use `x` to reset the board to dashes; it updates again on the next threshold crossing.
+
 ## Controls
 - `r` : Draw a new ROI
+- `b` : Capture baseline for all ROIs
+- `d` : Delete ROI by name
 - `c` : Clear all ROIs
+- `x` : Reset last-active board
 - `SPACE` : Pause/Play
 - `.` : Next frame (paused, video mode)
 - `,` : Previous frame (paused, video mode)
@@ -77,3 +86,4 @@ You will be prompted to choose between video playback and live capture.
 ## Notes
 - Baseline is updated using recent inactive frames only.
 - Jumping with `p`/`n` restores the baseline state for that frame.
+- The last-active board updates when any ROI crosses the threshold.
