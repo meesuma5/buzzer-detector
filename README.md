@@ -10,17 +10,20 @@ This repository contains a single OpenCV-based script that:
 - Supports both video playback and live capture modes.
 - Optionally records annotated video and audio (live mode).
 - Displays a last-active board for quick per-ROI status checks.
+- Uses GUI prompts for all inputs (no terminal entry required).
 
 ## What It Does
 - **ROI-based detection:** Track only the buzzer area instead of the whole frame.
-- **Rolling baseline:** Baselines are computed from recent inactive frames and refreshed on a timer.
+- **Rolling baseline:** Baselines are computed from recent inactive frames and refreshed every N frames using a percentile vote.
 - **Active-frame navigation:** Jump through detected activity frames with shortcuts.
 - **Session artifacts:** Logs and recordings are stored per session.
 - **Last-active board:** A small scoreboard tracks the most recent frame each ROI was lit.
+- **On-screen controls:** A top-right panel lists active shortcuts in the video window.
 
 ## Engineering Depth (Why This Is Nontrivial)
 - **Frame accumulation and state:** Each ROI maintains a rolling history of baseline snapshots to keep detection stable over time.
 - **Inactive-only sampling:** Baseline updates are computed only from frames classified as inactive to avoid contamination.
+- **Frame-based voting:** Baselines refresh every N frames from the Yth percentile of the last Z inactive samples.
 - **Timeline recovery:** When jumping across the timeline, baseline state is restored for the target frame to preserve consistency.
 - **Realtime + playback parity:** The same detection pipeline supports both live capture and offline analysis.
 - **Integrated session output:** Video, audio, and logs are synchronized and stored per session for auditability.
@@ -46,10 +49,10 @@ Run the script:
 ```bash
 python mock.py
 ```
-You will be prompted to choose between video playback and live capture.
+You will be prompted using GUI dialogs to choose between video playback and live capture.
 
 ### Video Playback Mode
-1. Choose option `1` and enter your video filename.
+1. Choose option `1` and select your video file from the file picker.
 2. Draw ROIs with `r` and name them.
 3. Adjust the `Delta` slider until activation matches the buzzer turning on.
 4. Use frame navigation:
@@ -58,7 +61,7 @@ You will be prompted to choose between video playback and live capture.
 
 ### Live Capture Mode
 1. Choose option `2` and select your camera device ID.
-2. (Optional) Enable audio recording if `ffmpeg` is available.
+2. (Optional) Enable audio recording if `ffmpeg` is available and select the audio device index.
 3. Draw ROIs and tune the `Delta` slider.
 4. Use `R` to start/stop recording. Output files and logs go to a session folder.
 
@@ -84,6 +87,6 @@ The on-screen board shows each ROI name in the first row and the most recent fra
 - **Recordings:** Saved to the session folder (live capture mode).
 
 ## Notes
-- Baseline is updated using recent inactive frames only.
+- Baseline uses recent inactive frames only and refreshes every N frames.
 - Jumping with `p`/`n` restores the baseline state for that frame.
 - The last-active board updates when any ROI crosses the threshold.

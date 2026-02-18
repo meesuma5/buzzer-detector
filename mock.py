@@ -1,9 +1,10 @@
 import cv2
 import numpy as np
+import tkinter as tk
+from tkinter import filedialog, messagebox, simpledialog
 from collections import deque
 from datetime import datetime
 import os
-import time
 import subprocess
 import shutil
 
@@ -11,8 +12,8 @@ import shutil
 SESSION_BASE_DIR = 'recording_sessions'
 RECORD_BASENAME = 'recording'
 LOG_BASENAME = 'detection_log'
-BASELINE_REFRESH_SEC = 0.1
-BASELINE_SAMPLE_SIZE = 30
+BASELINE_REFRESH_FRAMES = 3
+BASELINE_SAMPLE_SIZE = 50
 BASELINE_HISTORY_FRAMES = 180
 BASELINE_PERCENTILE = 75
 # ---------------------
@@ -36,6 +37,105 @@ def start_audio_recording(audio_index, output_path):
 def nothing(x):
     pass
 
+def prompt_roi_name(prompt_text, default_value=None):
+    root = tk.Tk()
+    root.withdraw()
+    root.attributes("-topmost", True)
+    result = simpledialog.askstring("ROI Name", prompt_text, initialvalue=default_value, parent=root)
+    root.destroy()
+    if result is None:
+        return None
+    return result.strip()
+
+def prompt_choice(title, prompt_text, valid_choices):
+    while True:
+        root = tk.Tk()
+        root.withdraw()
+        root.attributes("-topmost", True)
+        result = simpledialog.askstring(title, prompt_text, parent=root)
+        root.destroy()
+        if result is None:
+            return None
+        result = result.strip()
+        if result in valid_choices:
+            return result
+
+def prompt_integer(title, prompt_text, default_value=None):
+    root = tk.Tk()
+    root.withdraw()
+    root.attributes("-topmost", True)
+    result = simpledialog.askinteger(title, prompt_text, initialvalue=default_value, parent=root)
+    root.destroy()
+    return result
+
+def prompt_yes_no(title, prompt_text):
+    root = tk.Tk()
+    root.withdraw()
+    root.attributes("-topmost", True)
+    result = messagebox.askyesno(title, prompt_text, parent=root)
+    root.destroy()
+    return result
+
+def prompt_video_file():
+    root = tk.Tk()
+    root.withdraw()
+    root.attributes("-topmost", True)
+    file_path = filedialog.askopenfilename(title="Select video file")
+    root.destroy()
+    return file_path
+
+def show_info(title, text):
+    root = tk.Tk()
+    root.withdraw()
+    root.attributes("-topmost", True)
+    messagebox.showinfo(title, text, parent=root)
+    root.destroy()
+
+def draw_controls_panel(frame, is_live):
+    controls = [
+        "r: draw ROI",
+        "b: baseline",
+        "d: delete ROI",
+        "c: clear all",
+        "x: reset board",
+        "space: pause",
+    ]
+    if not is_live:
+        controls.extend([
+            ".: next frame",
+            ",: prev frame",
+            "p: prev active",
+            "n: next active",
+        ])
+    else:
+        controls.append("R: record")
+    controls.append("q: quit")
+
+    font = cv2.FONT_HERSHEY_SIMPLEX
+    font_scale = 0.8
+    thickness = 2
+    padding_x = 12
+    padding_y = 10
+    line_gap = 6
+
+    text_sizes = [cv2.getTextSize(line, font, font_scale, thickness)[0] for line in controls]
+    max_width = max((size[0] for size in text_sizes), default=0)
+    line_height = max((size[1] for size in text_sizes), default=0)
+    panel_width = max_width + padding_x * 2
+    panel_height = (line_height + line_gap) * len(controls) + padding_y * 2 - line_gap
+
+    frame_h, frame_w = frame.shape[:2]
+    start_x = max(frame_w - panel_width - 10, 0)
+    start_y = 10
+
+    cv2.rectangle(frame, (start_x, start_y), (start_x + panel_width, start_y + panel_height), (30, 30, 30), -1)
+    cv2.rectangle(frame, (start_x, start_y), (start_x + panel_width, start_y + panel_height), (200, 200, 200), 1)
+
+    cursor_y = start_y + padding_y + line_height
+    for line in controls:
+        cv2.putText(frame, line, (start_x + padding_x, cursor_y), font, font_scale, (240, 240, 240), thickness)
+        cursor_y += line_height + line_gap
+
 # 1. Choose Input Source
 print("\n" + "="*50)
 print("BUZZER DETECTOR - INPUT SOURCE SELECTION")
@@ -44,11 +144,17 @@ print("1. Use video file")
 print("2. Live capture from phone/camera")
 print("="*50)
 
+input_source_menu = (
+    "BUZZER DETECTOR - INPUT SOURCE SELECTION\n"
+    "1. Use video file\n"
+    "2. Live capture from phone/camera"
+)
+
 while True:
-    choice = input("Enter your choice (1 or 2): ").strip()
-    if choice in ['1', '2']:
-        break
-    print("Invalid choice. Please enter 1 or 2.")
+    choice = prompt_choice("Input Source", f"{input_source_menu}\n\nEnter your choice (1 or 2):", ["1", "2"])
+    if choice is None:
+        raise SystemExit(0)
+    break
 
 is_live_capture = (choice == '2')
 
@@ -56,8 +162,9 @@ if is_live_capture:
     print("\n--- LIVE CAPTURE MODE ---")
     print("Connecting to camera...")
     print("Note: Make sure your phone is connected via USB or using an app like DroidCam/iVCam")
-    device_id = input("Enter camera device ID (default 0, try 1 or 2 if not working): ").strip()
-    device_id = int(device_id) if device_id else 0
+    device_id = prompt_integer("Camera Device", "Enter camera device ID (default 0):", 0)
+    if device_id is None:
+        raise SystemExit(0)
     cap = cv2.VideoCapture(device_id)
     session_stamp = datetime.now().strftime("%Y%m%d_%H%M%S")
     session_dir = os.path.join(SESSION_BASE_DIR, f"session_{session_stamp}")
@@ -65,10 +172,14 @@ if is_live_capture:
     print(f"Session folder: {session_dir}")
 else:
     print("\n--- VIDEO PLAYBACK MODE ---")
-    video_path = input("Enter video filename (e.g., video.mp4): ").strip()
+    video_path = prompt_video_file()
+    if not video_path:
+        raise SystemExit(0)
     while not os.path.exists(video_path):
-        print(f"Error: File '{video_path}' not found.")
-        video_path = input("Enter video filename: ").strip()
+        show_info("File Not Found", f"File not found: {video_path}")
+        video_path = prompt_video_file()
+        if not video_path:
+            raise SystemExit(0)
     cap = cv2.VideoCapture(video_path)
     print(f"Loading video: {video_path}")
 
@@ -103,7 +214,7 @@ video_writer = None
 active_frames = []  # List to store frame numbers where any ROI was active
 log_entries = []  # Store log entries for the current recording
 frame_counter = 0  # For live capture, we'll track our own frame count
-last_baseline_refresh = time.time()
+frames_since_baseline_refresh = 0
 recording_index = 0
 current_log_path = None
 current_video_path = None
@@ -116,16 +227,12 @@ audio_device_index = None
 if is_live_capture:
     ffmpeg_available = shutil.which("ffmpeg") is not None
     if ffmpeg_available:
-        use_audio = input("Enable audio recording for live capture? (y/n): ").strip().lower()
-        if use_audio == "y":
-            print("To list audio devices on macOS, you can run:")
-            print("  ffmpeg -f avfoundation -list_devices true -i \"\"")
-            audio_device = input("Enter audio device index (e.g., 0 or 1): ").strip()
-            if audio_device.isdigit():
-                audio_device_index = int(audio_device)
+        use_audio = prompt_yes_no("Audio Recording", "Enable audio recording for live capture?")
+        if use_audio:
+            show_info("Audio Devices", "To list audio devices on macOS, run:\nffmpeg -f avfoundation -list_devices true -i \"\"")
+            audio_device_index = prompt_integer("Audio Device", "Enter audio device index (e.g., 0 or 1):")
+            if audio_device_index is not None:
                 audio_enabled = True
-            else:
-                print("Invalid audio device index. Audio recording disabled.")
     else:
         print("ffmpeg not found. Audio recording disabled.")
 
@@ -220,6 +327,7 @@ def draw_last_active_board(frame, rois_list, last_active_map):
 
 while True:
     # Handle video playback vs live capture
+    frame_advanced = False
     if is_live_capture:
         # Live capture mode - continuous feed
         if not paused:
@@ -228,6 +336,7 @@ while True:
                 print("Error: Could not read frame from camera")
                 break
             frame_counter += 1
+            frame_advanced = True
         current_frame = frame_counter
     else:
         # Video playback mode - with seekbar
@@ -239,6 +348,7 @@ while True:
             cap.set(cv2.CAP_PROP_POS_FRAMES, seekbar_pos)
             ret, frame = cap.read()
             paused = True  # Auto-pause when seeking
+            frame_advanced = True
             restore_baselines_for_frame(seekbar_pos, rois)
         elif not paused:
             ret, frame = cap.read()
@@ -246,6 +356,7 @@ while True:
                 # Loop video automatically for convenience
                 cap.set(cv2.CAP_PROP_POS_FRAMES, 0)
                 continue
+            frame_advanced = True
             # Update seekbar to current position
             current_frame = int(cap.get(cv2.CAP_PROP_POS_FRAMES))
             cv2.setTrackbarPos('Frame', 'Calibration Tool', current_frame)
@@ -261,7 +372,9 @@ while True:
     if not is_live_capture:
         current_frame = int(cap.get(cv2.CAP_PROP_POS_FRAMES))
     
-    refresh_baseline_now = (time.time() - last_baseline_refresh) >= BASELINE_REFRESH_SEC
+    if frame_advanced:
+        frames_since_baseline_refresh += 1
+    refresh_baseline_now = frames_since_baseline_refresh >= BASELINE_REFRESH_FRAMES
 
     # Track if any ROI is active in this frame
     any_roi_active = False
@@ -280,16 +393,18 @@ while True:
             delta_value = 0
         else:
             delta_value = avg_brightness - baseline
-            is_active = delta_value > threshold_value
+            is_active = delta_value >= threshold_value
 
-        # Auto-refresh baseline from inactive frames only
-        if refresh_baseline_now and is_active is False:
+        # Collect inactive samples for baseline voting window
+        if frame_advanced and is_active is False:
             samples.append(avg_brightness)
             if len(samples) > BASELINE_SAMPLE_SIZE:
                 samples.pop(0)
+
+        # Refresh baseline every N frames from the last Z inactive samples
+        if refresh_baseline_now and samples:
             baseline = int(np.percentile(samples, BASELINE_PERCENTILE))
-            if baseline is not None:
-                delta_value = avg_brightness - baseline
+            delta_value = avg_brightness - baseline
         
         if is_active:
             any_roi_active = True
@@ -330,7 +445,7 @@ while True:
         rois[i] = (x, y, w, h, name, is_active, baseline, samples, history, active_history)
     
     if refresh_baseline_now:
-        last_baseline_refresh = time.time()
+        frames_since_baseline_refresh = 0
 
     # Track active frames
     if any_roi_active and current_frame not in active_frames:
@@ -352,6 +467,7 @@ while True:
                 cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 255, 255), 2)
 
     draw_last_active_board(display_frame, rois, last_active_frames)
+    draw_controls_panel(display_frame, is_live_capture)
     
     # Write frame if recording
     if recording and video_writer is not None:
@@ -482,7 +598,13 @@ while True:
         # Handle if user cancels selection (w=0 or h=0)
         if rect[2] > 0 and rect[3] > 0:
             # Ask for a name for this ROI
-            roi_name = input(f"Enter name for ROI #{len(rois) + 1} (or press Enter for default): ").strip()
+            roi_name = prompt_roi_name(
+                f"Enter name for ROI #{len(rois) + 1} (or leave blank for default):",
+                f"ROI_{len(rois) + 1}",
+            )
+            if roi_name is None:
+                print("ROI naming cancelled")
+                continue
             if not roi_name:
                 roi_name = f"ROI_{len(rois) + 1}"
             # Add ROI with name and initial state (False = inactive)
@@ -511,7 +633,10 @@ while True:
         if not rois:
             print("No ROIs available to delete")
         else:
-            roi_name = input("Enter ROI name to delete: ").strip()
+            roi_name = prompt_roi_name("Enter ROI name to delete:")
+            if roi_name is None:
+                print("ROI delete cancelled")
+                continue
             if not roi_name:
                 print("No ROI name entered")
             else:
