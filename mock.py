@@ -16,6 +16,8 @@ BASELINE_REFRESH_FRAMES = 3
 BASELINE_SAMPLE_SIZE = 50
 BASELINE_HISTORY_FRAMES = 180
 BASELINE_PERCENTILE = 75
+BASELINE_METHOD = "percentile"  # "ema" or "percentile"
+EMA_ALPHA = 0.2
 # ---------------------
 
 def start_audio_recording(audio_index, output_path):
@@ -211,7 +213,7 @@ last_active_frames = {}
 paused = False
 recording = False
 video_writer = None
-active_frames = []  # List to store frame numbers where any ROI was active
+active_frames = []  # List to store frame numbers where any ROI became active
 log_entries = []  # Store log entries for the current recording
 frame_counter = 0  # For live capture, we'll track our own frame count
 frames_since_baseline_refresh = 0
@@ -258,7 +260,6 @@ if not is_live_capture:
 else:
     print(f"Live Capture @ {fps} FPS (estimated)")
 print("="*50 + "\n")
-
 def restore_baselines_for_frame(target_frame, rois_list):
     for i, roi_data in enumerate(rois_list):
         x, y, w, h, name, was_active, baseline, samples, history, active_history = roi_data
@@ -324,6 +325,9 @@ def draw_last_active_board(frame, rois_list, last_active_map):
 
         cursor_x += cell_width
 
+def get_video_frame_index(capture):
+    return max(int(capture.get(cv2.CAP_PROP_POS_FRAMES)) - 1, 0)
+
 
 while True:
     # Handle video playback vs live capture
@@ -349,6 +353,8 @@ while True:
             ret, frame = cap.read()
             paused = True  # Auto-pause when seeking
             frame_advanced = True
+            current_frame = get_video_frame_index(cap)
+            cv2.setTrackbarPos('Frame', 'Calibration Tool', current_frame)
             restore_baselines_for_frame(seekbar_pos, rois)
         elif not paused:
             ret, frame = cap.read()
@@ -358,7 +364,7 @@ while True:
                 continue
             frame_advanced = True
             # Update seekbar to current position
-            current_frame = int(cap.get(cv2.CAP_PROP_POS_FRAMES))
+            current_frame = get_video_frame_index(cap)
             cv2.setTrackbarPos('Frame', 'Calibration Tool', current_frame)
     
     # Work on a copy of the frame to avoid drawing permanently on the original data
@@ -368,16 +374,20 @@ while True:
     threshold_value = cv2.getTrackbarPos('Delta', 'Calibration Tool')
     # Fast normalization to keep thresholds consistent across lighting changes
     gray_frame = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
-    gray_frame = cv2.equalizeHist(gray_frame)
-    if not is_live_capture:
-        current_frame = int(cap.get(cv2.CAP_PROP_POS_FRAMES))
     
-    if frame_advanced:
-        frames_since_baseline_refresh += 1
-    refresh_baseline_now = frames_since_baseline_refresh >= BASELINE_REFRESH_FRAMES
+    gray_frame = cv2.equalizeHist(gray_frame)
+    if not is_live_capture and frame_advanced:
+        current_frame = get_video_frame_index(cap)
+    
+    if BASELINE_METHOD != "ema":
+        if frame_advanced:
+            frames_since_baseline_refresh += 1
+        refresh_baseline_now = frames_since_baseline_refresh >= BASELINE_REFRESH_FRAMES
+    else:
+        refresh_baseline_now = False
 
-    # Track if any ROI is active in this frame
-    any_roi_active = False
+    # Track if any ROI just became active in this frame
+    any_roi_became_active = False
     
     # Process ROIs
     for i, roi_data in enumerate(rois):
@@ -386,6 +396,10 @@ while True:
         # Extract the region of interest from preprocessed gray frame
         gray_roi = gray_frame[y:y+h, x:x+w]
         avg_brightness = int(np.mean(gray_roi))
+
+        # Initialize baseline for EMA if needed
+        if baseline is None and frame_advanced:
+            baseline = avg_brightness
 
         # DECISION LOGIC (baseline-delta thresholding)
         if baseline is None:
@@ -401,13 +415,16 @@ while True:
             if len(samples) > BASELINE_SAMPLE_SIZE:
                 samples.pop(0)
 
-        # Refresh baseline every N frames from the last Z inactive samples
-        if refresh_baseline_now and samples:
+        # Update baseline using EMA or percentile voting
+        if BASELINE_METHOD == "ema" and frame_advanced and is_active is False and baseline is not None:
+            baseline = int(EMA_ALPHA * avg_brightness + (1 - EMA_ALPHA) * baseline)
+            delta_value = avg_brightness - baseline
+        elif refresh_baseline_now and samples:
             baseline = int(np.percentile(samples, BASELINE_PERCENTILE))
             delta_value = avg_brightness - baseline
         
-        if is_active:
-            any_roi_active = True
+        if was_active != is_active and is_active:
+            any_roi_became_active = True
         
         # THRESHOLD CROSSING DETECTION
         if was_active != is_active:
@@ -421,7 +438,8 @@ while True:
         # Persist baseline history for restores
         if baseline is not None:
             history.append((current_frame, baseline, list(samples)))
-            if is_active:
+            #only store the history of the frame where it was activated and not all active frames
+            if is_active and was_active!=is_active: 
                 active_history[current_frame] = (baseline, list(samples))
         
         # VISUALIZATION
@@ -448,7 +466,7 @@ while True:
         frames_since_baseline_refresh = 0
 
     # Track active frames
-    if any_roi_active and current_frame not in active_frames:
+    if any_roi_became_active and current_frame not in active_frames:
         active_frames.append(current_frame)
         active_frames.sort()
     
